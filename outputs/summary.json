@@ -24,10 +24,16 @@
       "accuracy": 0.7303520469576272
     },
     {
-      "model": "xgboost (all features)",
+      "model": "xgboost (raw)",
       "log_loss": 0.7087093591690063,
       "brier": 0.21699053049087524,
       "accuracy": 0.7015242294323699
+    },
+    {
+      "model": "xgboost (calibrated)",
+      "log_loss": 0.5842011200686823,
+      "brier": 0.19143040986095572,
+      "accuracy": 0.7063795831699103
     }
   ],
   "feature_importance": {

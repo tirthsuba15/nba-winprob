@@ -59,10 +59,13 @@ def reliability_plot(curves, path):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot([0, 1], [0, 1], "--", color="#888", label="perfect calibration")
+    ax.plot([0, 1], [0, 1], "--", color="#888", lw=1.5, label="perfect calibration")
+    styles = {"xgboost (raw)": ("o--", "#d62728"), "xgboost (calibrated)": ("o-", "#2ca02c")}
     for label, (y, p) in curves.items():
         t = calibration_table(y, p, n_bins=10)
-        ax.plot(t["predicted"], t["actual"], "o-", label=label)
+        fmt, color = styles.get(label, ("o-", None))
+        kw = {"color": color} if color else {}
+        ax.plot(t["predicted"], t["actual"], fmt, label=label, **kw)
     ax.set_xlabel("Predicted home win probability")
     ax.set_ylabel("Actual home win rate")
     ax.set_title("Reliability diagram (test set)")
@@ -82,6 +85,14 @@ def train_xgb(Xtr, ytr):
     )
     clf.fit(Xtr, ytr)
     return clf
+
+
+def calibrate_xgb(clf, Xtr, ytr):
+    """Wrap raw XGBoost in isotonic calibration, fit on training data only."""
+    from sklearn.calibration import CalibratedClassifierCV
+    cal = CalibratedClassifierCV(clf, method="isotonic", cv=5)
+    cal.fit(Xtr, ytr)
+    return cal
 
 
 def main():
@@ -121,21 +132,26 @@ def main():
 
     # --- model ---
     clf = train_xgb(Xtr, ytr)
-    p_xgb = clf.predict_proba(Xte)[:, 1]
+    p_xgb_raw = clf.predict_proba(Xte)[:, 1]
+
+    print("Fitting calibration wrapper on training data (cv=5, isotonic) ...")
+    clf_cal = calibrate_xgb(clf, Xtr, ytr)
+    p_xgb_cal = clf_cal.predict_proba(Xte)[:, 1]
 
     results = [
         evaluate("naive (base rate)", yte, p_naive),
         evaluate("elo_only (pregame)", yte, p_elo),
         evaluate("logistic (margin+time)", yte, p_log),
-        evaluate("xgboost (all features)", yte, p_xgb),
+        evaluate("xgboost (raw)", yte, p_xgb_raw),
+        evaluate("xgboost (calibrated)", yte, p_xgb_cal),
     ]
     res_df = pd.DataFrame(results).set_index("model")
     print(res_df.to_string(float_format=lambda x: f"{x:.4f}"))
 
-    print("\nCalibration of the XGBoost model (test set):")
-    cal = calibration_table(yte, p_xgb)
-    print(cal.to_string(index=False,
-                        float_format=lambda x: f"{x:.3f}"))
+    print("\nCalibration of the XGBoost (calibrated) model (test set):")
+    cal_table = calibration_table(yte, p_xgb_cal)
+    print(cal_table.to_string(index=False,
+                               float_format=lambda x: f"{x:.3f}"))
 
     # importances
     imp = sorted(zip(FEATURES, clf.feature_importances_),
@@ -145,9 +161,12 @@ def main():
         print(f"  {f:18s} {v:.3f}")
 
     # --- save artifacts ---
+    import pickle
     clf.save_model(os.path.join(args.out, "model.json"))
+    with open(os.path.join(args.out, "model_calibrated.pkl"), "wb") as fh:
+        pickle.dump(clf_cal, fh)
     res_df.to_csv(os.path.join(args.out, "metrics.csv"))
-    cal.to_csv(os.path.join(args.out, "calibration.csv"), index=False)
+    cal_table.to_csv(os.path.join(args.out, "calibration.csv"), index=False)
     with open(os.path.join(args.out, "summary.json"), "w") as fh:
         json.dump({
             "test_seasons": test_seasons,
@@ -157,8 +176,10 @@ def main():
             "feature_importance": {f: float(v) for f, v in imp},
         }, fh, indent=2)
     reliability_plot(
-        {"xgboost": (yte, p_xgb), "logistic": (yte, p_log),
-         "elo_only": (yte, p_elo)},
+        {"elo_only": (yte, p_elo),
+         "logistic": (yte, p_log),
+         "xgboost (raw)": (yte, p_xgb_raw),
+         "xgboost (calibrated)": (yte, p_xgb_cal)},
         os.path.join(args.out, "reliability_diagram.png"),
     )
     print(f"\nSaved model + metrics + reliability diagram to {args.out}/")
