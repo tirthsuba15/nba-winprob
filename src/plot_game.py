@@ -18,8 +18,11 @@ from features import build_dataset, FEATURES
 REG_SECONDS = 48 * 60
 
 
-def plot_curve(game_df, probs, meta, out_path):
-    """game_df sorted by time; probs aligned home-win probabilities in [0,1]."""
+def plot_curve(game_df, probs, meta, out_path=None):
+    """game_df sorted by time; probs aligned home-win probabilities in [0,1].
+
+    Returns the matplotlib Figure. Saves to out_path if provided.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -47,8 +50,10 @@ def plot_curve(game_df, probs, meta, out_path):
         ax.text(0.99, 0.02, note, transform=ax.transAxes, ha="right",
                 color="#999", fontsize=8)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=130)
-    print(f"saved {out_path}")
+    if out_path:
+        fig.savefig(out_path, dpi=130)
+        print(f"saved {out_path}")
+    return fig
 
 
 def pick_swingy_game(df, games):
@@ -82,7 +87,7 @@ def main():
     probs = clf.predict_proba(gdf[FEATURES].to_numpy(dtype=float))[:, 1]
 
     meta = games[games["game_id"] == gid].iloc[0].to_dict()
-    plot_curve(gdf, probs, meta, args.out)
+    plot_curve(gdf, probs, meta, out_path=args.out)
 
 
 if __name__ == "__main__":
