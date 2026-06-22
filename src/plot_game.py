@@ -14,6 +14,7 @@ import os
 import numpy as np
 import pandas as pd
 from features import build_dataset, FEATURES
+from team_names import team_name
 
 REG_SECONDS = 48 * 60
 
@@ -40,15 +41,16 @@ def plot_curve(game_df, probs, meta, out_path=None):
     ax.set_xlim(0, max(48, x.max()))
     ax.set_xlabel("Minutes elapsed")
     ax.set_ylabel("Home win probability")
-    winner = "HOME" if meta["home_win"] else "AWAY"
+    away = team_name(meta["away_team_id"])
+    home = team_name(meta["home_team_id"])
+    winner = home if meta["home_win"] else away
     ax.set_title(
-        f"{meta['game_id']}  |  {meta['away_team_id']} @ {meta['home_team_id']}  "
-        f"|  final {meta['home_score']}-{meta['away_score']}  ({winner} win)"
+        f"{away} @ {home}  |  final {int(meta['home_score'])}-{int(meta['away_score'])}  "
+        f"({winner} win)"
     )
-    note = "synthetic data (illustrative)" if str(meta["game_id"]).startswith("SYN") else ""
-    if note:
-        ax.text(0.99, 0.02, note, transform=ax.transAxes, ha="right",
-                color="#999", fontsize=8)
+    note = "synthetic data (illustrative)" if str(meta["game_id"]).startswith("SYN") else str(meta["game_id"])
+    ax.text(0.99, 0.02, note, transform=ax.transAxes, ha="right",
+            color="#999", fontsize=8)
     fig.tight_layout()
     if out_path:
         fig.savefig(out_path, dpi=130)

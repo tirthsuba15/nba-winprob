@@ -25,7 +25,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from features import build_dataset, FEATURES                       # win-prob
 from wpa import compute_wpa
 from plot_game import plot_curve
+from team_names import team_name, team_name_from_abbrev
 from player_points.features import build_features as build_pp_features, FEATURES as PP_FEATURES
+
+
+# ── display helpers ──────────────────────────────────────────────────────────────
+def _fmt_date(d) -> str:
+    """'2025-04-13' -> 'Apr 13, 2025' (falls back to the raw value)."""
+    try:
+        return pd.Timestamp(d).strftime("%b %d, %Y")
+    except Exception:
+        return str(d)
+
+
+def _quarter_label(period) -> str:
+    p = int(period)
+    if p <= 4:
+        return f"Q{p}"
+    n = p - 4
+    return "OT" if n == 1 else f"OT{n}"
+
+
+def _time_left(secs_left, period) -> str:
+    """Seconds remaining within the current quarter, as mm:ss (clamped at 0)."""
+    t = int(secs_left) - (4 - int(period)) * 720
+    t = max(0, t)
+    return f"{t // 60}:{t % 60:02d}"
 
 # ── page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -186,7 +211,8 @@ def render_winprob_tab(wpa_df, games):
 
     def game_label(gid):
         row = games[games["game_id"] == gid].iloc[0]
-        return (f"{row['game_date']}  {row['away_team_id']} @ {row['home_team_id']}  "
+        return (f"{_fmt_date(row['game_date'])} — "
+                f"{team_name(row['away_team_id'])} @ {team_name(row['home_team_id'])} "
                 f"({int(row['away_score'])}–{int(row['home_score'])})")
 
     with c2:
@@ -204,11 +230,12 @@ def render_winprob_tab(wpa_df, games):
     meta = games[games["game_id"] == selected_id].iloc[0].to_dict()
     game_df = wpa_df[wpa_df["game_id"] == selected_id].sort_values("secs_left", ascending=False)
 
-    winner_str = "Home" if meta["home_win"] else "Away"
+    away_nm, home_nm = team_name(meta["away_team_id"]), team_name(meta["home_team_id"])
+    winner_nm = home_nm if meta["home_win"] else away_nm
     st.markdown(
-        f"**{meta['game_date']}** — {meta['away_team_id']} @ {meta['home_team_id']}  "
+        f"**{_fmt_date(meta['game_date'])}** — {away_nm} @ {home_nm}  "
         f"| Final: {int(meta['home_score'])}–{int(meta['away_score'])}  "
-        f"| **{winner_str} win** | Season: {meta['season']}"
+        f"| **{winner_nm} win** | Season: {meta['season']}"
     )
 
     if game_df.empty:
@@ -225,18 +252,21 @@ def render_winprob_tab(wpa_df, games):
         gdc["swing_for_winner"] = np.where(
             gdc["label_home_win"] == 1, gdc["wpa"], -gdc["wpa"]
         )
-        cols = ["period", "secs_left", "score_margin", "win_prob", "wpa", "swing_for_winner"]
-        if "description" in gdc.columns:
-            cols = ["description"] + cols
-        if "player" in gdc.columns:
-            cols = ["player"] + cols
-        top_plays = (gdc.sort_values("swing_for_winner", ascending=False)
-                     .head(10)[cols].reset_index(drop=True))
-        top_plays.index += 1
+        top = gdc.sort_values("swing_for_winner", ascending=False).head(10)
+
+        disp = pd.DataFrame({
+            "Player":    top["player"] if "player" in top.columns else "",
+            "Play":      top["description"] if "description" in top.columns else "",
+            "Quarter":   top["period"].apply(_quarter_label),
+            "Time left": top.apply(lambda r: _time_left(r["secs_left"], r["period"]), axis=1),
+            "Margin":    top["score_margin"].astype(int),
+            "Win prob":  top["win_prob"],
+            "WP added":  top["wpa"],
+        }).reset_index(drop=True)
+        disp.index += 1
         st.dataframe(
-            top_plays.style.format(
-                {"win_prob": "{:.1%}", "wpa": "{:+.3f}", "swing_for_winner": "{:+.3f}",
-                 "score_margin": "{:+d}", "secs_left": "{:.0f}"}
+            disp.style.format(
+                {"Margin": "{:+d}", "Win prob": "{:.0%}", "WP added": "{:+.2f}"}
             ),
             use_container_width=True,
         )
@@ -250,11 +280,14 @@ def render_winprob_tab(wpa_df, games):
         st.subheader("Model metrics (2024-25 test season)")
         summary = load_metrics()
         if summary:
-            met_df = pd.DataFrame(summary["metrics"]).set_index("model")
+            met_df = (pd.DataFrame(summary["metrics"]).set_index("model")
+                      .rename(columns={"log_loss": "Log-loss", "brier": "Brier",
+                                       "accuracy": "Accuracy"}))
+            met_df.index.name = "Model"
             st.dataframe(
                 met_df.style.format("{:.4f}")
-                .highlight_min(subset=["log_loss", "brier"], color="#d4edda")
-                .highlight_max(subset=["accuracy"], color="#d4edda"),
+                .highlight_min(subset=["Log-loss", "Brier"], color="#d4edda")
+                .highlight_max(subset=["Accuracy"], color="#d4edda"),
                 use_container_width=True,
             )
             st.caption(
@@ -319,8 +352,10 @@ def render_player_props_tab():
         player_name = st.selectbox("Player", players, index=default_idx, key="pp_player")
     with c2:
         opps = opponent_options(df_pp)
-        opp_abbrev = st.selectbox("Opponent", opps, key="pp_opp") if opps else None
+        opp_abbrev = (st.selectbox("Opponent", opps, format_func=team_name_from_abbrev,
+                                   key="pp_opp") if opps else None)
 
+    opp_full = team_name_from_abbrev(opp_abbrev)
     next_date = (pd.Timestamp(df_pp["game_date"].max()) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
     X, latest = build_projection_row(df_pp, player_name, opp_abbrev, next_date)
@@ -330,11 +365,10 @@ def render_player_props_tab():
 
     y_mean, y_lo, y_hi = predict_points(models, X)
 
-    st.markdown(f"**{player_name}** vs **{opp_abbrev or '?'}** — projected for next game ({next_date})")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Expected points", f"{y_mean:.1f}")
-    m2.metric("80% interval low (q10)", f"{y_lo:.1f}")
-    m3.metric("80% interval high (q90)", f"{y_hi:.1f}")
+    st.markdown(f"**{player_name}** vs **{opp_full}** — projected for next game ({_fmt_date(next_date)})")
+    m1, m2 = st.columns([1, 2])
+    m1.metric("Projected points", f"{y_mean:.1f}")
+    m2.markdown(f"### 80% range: {y_lo:.1f} – {y_hi:.1f} points")
     st.caption(f"There's an estimated 80% chance {player_name} scores between "
                f"**{y_lo:.1f}** and **{y_hi:.1f}** points — the spread is the honest "
                f"uncertainty a single number hides.")
