@@ -1,0 +1,15 @@
+# data is large + reproducible from fetch_data.py -- don't commit it
+data/
+*.csv
+
+# but DO keep the committed example outputs for the README
+!outputs/*.csv
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# os
+.DS_Store

@@ -1,0 +1,41 @@
+{
+  "test_seasons": [
+    "2024-25"
+  ],
+  "n_train_moments": 146008,
+  "n_test_moments": 147878,
+  "metrics": [
+    {
+      "model": "naive (base rate)",
+      "log_loss": 0.6868010164916407,
+      "brier": 0.2468329181893795,
+      "accuracy": 0.5573783794749726
+    },
+    {
+      "model": "elo_only (pregame)",
+      "log_loss": 0.656732025836674,
+      "brier": 0.2327148064744493,
+      "accuracy": 0.5894656405956261
+    },
+    {
+      "model": "logistic (margin+time)",
+      "log_loss": 0.5029729263150945,
+      "brier": 0.17067546638181538,
+      "accuracy": 0.7303520469576272
+    },
+    {
+      "model": "xgboost (all features)",
+      "log_loss": 0.7087093591690063,
+      "brier": 0.21699053049087524,
+      "accuracy": 0.7015242294323699
+    }
+  ],
+  "feature_importance": {
+    "score_margin": 0.3489478826522827,
+    "elo_diff": 0.22737659513950348,
+    "margin_x_fracleft": 0.14898797869682312,
+    "frac_left": 0.1487436145544052,
+    "secs_left": 0.08990325778722763,
+    "period": 0.03604067116975784
+  }
+}
