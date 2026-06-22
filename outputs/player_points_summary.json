@@ -1,0 +1,36 @@
+{
+  "test_seasons": [
+    "2024-25"
+  ],
+  "n_train": 26327,
+  "n_test": 26306,
+  "n_players_train": 541,
+  "n_players_test": 569,
+  "results": [
+    {
+      "model": "naive (season avg to date)",
+      "mae": 4.657673327368922,
+      "n": 26306
+    },
+    {
+      "model": "xgboost (mean + 80% interval)",
+      "mae": 4.627357771470752,
+      "n": 26306,
+      "coverage_80": 0.778947768569908,
+      "interval_width": 14.175278663635254
+    }
+  ],
+  "feature_importance": {
+    "pts_season_avg": 0.433000773191452,
+    "pts_roll10": 0.40169888734817505,
+    "pts_roll5": 0.06849047541618347,
+    "min_roll5": 0.021597187966108322,
+    "min_roll10": 0.01287131942808628,
+    "days_rest": 0.012404444627463818,
+    "opp_pts_allowed": 0.010618949308991432,
+    "ppm_roll5": 0.010268308222293854,
+    "b2b": 0.010022648610174656,
+    "opp_pace": 0.009554190561175346,
+    "home": 0.009472759440541267
+  }
+}
