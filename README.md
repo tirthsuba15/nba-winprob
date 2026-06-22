@@ -104,6 +104,35 @@ python src/player_points/predict.py --player "Stephen Curry" --opp-team BOS
 # → Expected: 21.3 pts  |  80% interval: 12.6–33.1 pts
 ```
 
+### Over / under (informational only — **not betting advice**)
+
+Once you have a *distribution* instead of a point estimate, you can ask: what's
+the chance a player goes over a given line? The model approximates the projected
+points as a Normal distribution and reads the probability off it:
+
+- `sigma = (q90 − q10) / 2.563` — an 80% prediction interval spans ~2.563 standard
+  deviations (`z₀.₉ − z₀.₁ = 1.2816 − (−1.2816)`), so the interval the model
+  already produces *is* the spread.
+- `P(over L) = 1 − Φ((L − mean) / sigma)`, computed with `math.erf` — no new
+  dependency (`src/player_points/odds.py`).
+
+The line defaults to the player's season average to date, rounded to the nearest
+0.5. In the dashboard's **Player Props** tab you can edit it and see a top-N
+leaderboard of projected scorers vs an opponent with a colored Over/Under lean.
+
+```bash
+python src/player_points/predict.py --player "Stephen Curry" --opp-team BOS --line 24.5
+# → Projected 21.3 | Line 24.5 | Over 34% / Under 66%
+python src/player_points/predict.py --top 5 --opp-team BOS
+# → leaderboard with Projected / Line / Over % / Lean
+```
+
+> **Why "informational only":** the Normal approximation is symmetric, but real
+> points are right-skewed and floored at 0, so `P(over)` on low lines is slightly
+> overstated. More importantly, the model is history-only — it has no injury or
+> minutes feed (see the note above). These numbers are a transparent illustration
+> of how a calibrated distribution turns into probabilities, **not** a betting edge.
+
 ## Quickstart
 
 ```bash
@@ -148,6 +177,7 @@ src/player_points/  SEPARATE points-projection model (distribution, not a point)
   features.py         leakage-safe rolling / opponent / rest features
   model.py            three XGBoost quantile regressors + backtest
   predict.py          CLI: project one player or top-N scorers vs an opponent
+  odds.py             over/under probabilities from the projected distribution
   news.py             stubbed injury/lineup feed — the documented next step
 ```
 
