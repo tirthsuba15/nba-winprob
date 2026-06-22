@@ -1,9 +1,16 @@
 # data is large + reproducible from fetch_data.py -- don't commit it
-data/
+# (anchored to repo root so src/data/ source code is NOT ignored)
+/data/
 *.csv
+*.parquet
+*.duckdb
 
 # but DO keep the committed example outputs for the README
 !outputs/*.csv
+
+# secrets -- never commit API keys
+.env
+*.key
 
 # python
 .venv/
