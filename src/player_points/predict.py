@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from features import build_features, FEATURES
 from news import apply_adjustments
+from odds import prob_over, round_to_half
 
 
 def _load_models(path="outputs/player_points_models.pkl"):
@@ -97,12 +98,17 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
     y_hi  = max(y_hi, y_mean)
     y_lo  = max(0.0, y_lo)
 
+    season_avg = float(latest["pts_season_avg"]) if "pts_season_avg" in latest else y_mean
     return {
         "player_name": latest["player_name"],
         "expected": round(y_mean, 1),
         "lo_80":    round(y_lo, 1),
         "hi_80":    round(y_hi, 1),
         "interval": f"{y_lo:.1f}–{y_hi:.1f}",
+        "mean_raw": y_mean,
+        "lo_raw":   y_lo,
+        "hi_raw":   y_hi,
+        "season_avg": season_avg,
     }
 
 
@@ -114,6 +120,9 @@ def main():
                     help="Upcoming game date YYYY-MM-DD (default: latest in data + 1 day)")
     ap.add_argument("--top", type=int, default=None,
                     help="Show top N projected scorers vs --opp-team")
+    ap.add_argument("--line", type=float, default=None,
+                    help="Over/under line. Default: player's season avg to date "
+                         "rounded to nearest 0.5 (informational only, not betting advice)")
     ap.add_argument("--data", default="data")
     ap.add_argument("--models", default="outputs/player_points_models.pkl")
     args = ap.parse_args()
@@ -137,17 +146,32 @@ def main():
         for p in players:
             result = project_player(p, args.opp_team, game_date, models, df)
             if result:
+                line = args.line if args.line is not None else round_to_half(result["season_avg"])
+                p_over = prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line)
+                result["line"] = line
+                result["over_pct"] = round(p_over * 100)
+                result["lean"] = "Over" if p_over >= 0.5 else "Under"
                 rows.append(result)
         out = pd.DataFrame(rows).sort_values("expected", ascending=False).head(args.top)
         out.index = range(1, len(out) + 1)
         print(f"\nTop {args.top} projected scorers vs {args.opp_team or 'any'} on {game_date}:\n")
-        print(out[["player_name", "expected", "interval"]].to_string())
+        print(out[["player_name", "expected", "interval", "line", "over_pct", "lean"]]
+              .rename(columns={"player_name": "Player", "expected": "Projected",
+                               "interval": "80% range", "line": "Line",
+                               "over_pct": "Over %", "lean": "Lean"})
+              .to_string())
+        print("\n(informational only — not betting advice)")
     elif args.player:
         result = project_player(args.player, args.opp_team, game_date, models, df)
         if result:
+            line = args.line if args.line is not None else round_to_half(result["season_avg"])
+            p_over = prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line)
             print(f"\n{result['player_name']} vs {args.opp_team or '?'} on {game_date}:")
             print(f"  Expected: {result['expected']} pts")
             print(f"  80% interval: {result['interval']} pts")
+            print(f"  Projected {result['expected']} | Line {line:.1f} | "
+                  f"Over {p_over:.0%} / Under {1 - p_over:.0%}")
+            print("  (informational only — not betting advice)")
     else:
         ap.print_help()
 

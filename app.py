@@ -27,6 +27,7 @@ from wpa import compute_wpa
 from plot_game import plot_curve
 from team_names import team_name, team_name_from_abbrev
 from player_points.features import build_features as build_pp_features, FEATURES as PP_FEATURES
+from player_points.odds import prob_over, round_to_half
 
 
 # ── display helpers ──────────────────────────────────────────────────────────────
@@ -202,6 +203,51 @@ def feature_contributions(model, X):
     return sorted(pairs, key=lambda p: -abs(p[1]))
 
 
+@st.cache_data
+def props_leaderboard(opp_abbrev: str | None, game_date: str) -> pd.DataFrame:
+    """Project every player vs the chosen opponent; return an over/under table.
+
+    Each player's line defaults to their own season-average-to-date rounded to
+    0.5. Batched prediction keeps it laptop-fast. Informational only.
+    """
+    df = load_pp_features()
+    models = load_pp_models()
+    if df is None or models is None:
+        return pd.DataFrame()
+
+    feats, meta = [], []
+    for p in df["player_name"].dropna().unique():
+        X, latest = build_projection_row(df, p, opp_abbrev, game_date)
+        if X is None:
+            continue
+        feats.append(X[0])
+        season_avg = float(latest["pts_season_avg"]) if "pts_season_avg" in latest else 0.0
+        meta.append((p, season_avg))
+
+    if not feats:
+        return pd.DataFrame()
+
+    M = np.array(feats, dtype=float)
+    y_mean = models["mean"].predict(M).clip(min=0)
+    y_lo = models["lo"].predict(M).clip(min=0)
+    y_hi = models["hi"].predict(M).clip(min=0)
+    y_lo = np.minimum(y_lo, y_mean)
+    y_hi = np.maximum(y_hi, y_mean)
+
+    rows = []
+    for i, (p, savg) in enumerate(meta):
+        line = max(0.0, round_to_half(savg))
+        po = prob_over(float(y_mean[i]), float(y_lo[i]), float(y_hi[i]), line)
+        rows.append({
+            "Player": p,
+            "Projected": round(float(y_mean[i]), 1),
+            "Line": line,
+            "Over %": round(po * 100),
+            "Lean": "Over" if po >= 0.5 else "Under",
+        })
+    return pd.DataFrame(rows).sort_values("Projected", ascending=False).reset_index(drop=True)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — WIN PROBABILITY
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -372,6 +418,44 @@ def render_player_props_tab():
     st.caption(f"There's an estimated 80% chance {player_name} scores between "
                f"**{y_lo:.1f}** and **{y_hi:.1f}** points — the spread is the honest "
                f"uncertainty a single number hides.")
+
+    # ── over / under (informational only) ───────────────────────────────────────
+    st.markdown("#### Over / Under")
+    st.warning("Informational only — **not betting advice.** The over/under uses a "
+               "simple Normal approximation of the projected distribution.")
+
+    season_avg = float(latest["pts_season_avg"]) if "pts_season_avg" in latest else y_mean
+    default_line = max(0.0, round_to_half(season_avg))
+    line = st.number_input(
+        "Line", min_value=0.0, value=float(default_line), step=0.5, key="pp_line",
+        help="Defaults to the player's season average to date, rounded to the nearest 0.5.",
+    )
+    p_over = prob_over(y_mean, y_lo, y_hi, line)
+    p_under = 1.0 - p_over
+    st.markdown(
+        f"**Projected {y_mean:.1f}** | **Line {line:.1f}** | "
+        f"Over **{p_over:.0%}** / Under **{p_under:.0%}**"
+    )
+
+    # ── leaderboard: top scorers vs this opponent ────────────────────────────────
+    st.subheader(f"Top projected scorers vs {opp_full}")
+    n = st.slider("Show top N", 5, 40, 15, key="pp_leaderboard_n")
+    lb = props_leaderboard(opp_abbrev, next_date)
+    if lb.empty:
+        st.info("No projections available.")
+    else:
+        def _color_lean(v):
+            return "color: #1a7f37; font-weight: 600" if v == "Over" else "color: #b42318; font-weight: 600"
+        top_lb = lb.head(n).reset_index(drop=True)
+        top_lb.index += 1
+        st.dataframe(
+            top_lb.style
+            .format({"Projected": "{:.1f}", "Line": "{:.1f}", "Over %": "{:.0f}%"})
+            .map(_color_lean, subset=["Lean"]),
+            use_container_width=True,
+        )
+        st.caption("Each line defaults to that player's season average to date "
+                   "(rounded to 0.5). Informational only — not betting advice.")
 
     # top contributing features (per-prediction, via XGBoost pred_contribs)
     st.subheader("Top contributing features")
