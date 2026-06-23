@@ -444,10 +444,16 @@ def render_player_props_tab():
     )
     p_over = calibrate_p(models, prob_over(y_mean, y_lo, y_hi, line))
     p_under = 1.0 - p_over
+    call = "OVER" if p_over >= 0.5 else "UNDER"
+    confidence = max(p_over, p_under)
     st.markdown(
         f"**Projected {y_mean:.1f}** | **Line {line:.1f}** | "
         f"Over **{p_over:.0%}** / Under **{p_under:.0%}**"
     )
+    st.markdown(f"**Call: {call}** · confidence **{confidence:.0%}** (calibrated)")
+    st.caption("⚠️ **Line = the player's season average to date, NOT a Vegas line.** "
+               "This only measures whether they beat their own running average — it is "
+               "not a market edge.")
 
     # ── leaderboard: top scorers vs this opponent ────────────────────────────────
     st.subheader(f"Top projected scorers vs {opp_full}")
