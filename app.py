@@ -301,7 +301,7 @@ def render_winprob_tab(wpa_df, games):
     else:
         probs = game_df["win_prob"].to_numpy()
         fig = plot_curve(game_df, probs, meta)
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width="stretch")
 
     # clutch plays
     st.subheader("Most clutch plays — this game")
@@ -326,7 +326,7 @@ def render_winprob_tab(wpa_df, games):
             disp.style.format(
                 {"Margin": "{:+d}", "Win prob": "{:.0%}", "WP added": "{:+.2f}"}
             ),
-            use_container_width=True,
+            width="stretch",
         )
     else:
         st.info("No play-by-play data available.")
@@ -346,7 +346,7 @@ def render_winprob_tab(wpa_df, games):
                 met_df.style.format("{:.4f}")
                 .highlight_min(subset=["Log-loss", "Brier"], color="#d4edda")
                 .highlight_max(subset=["Accuracy"], color="#d4edda"),
-                use_container_width=True,
+                width="stretch",
             )
             st.caption(
                 f"Train: {summary['n_train_moments']:,} moments "
@@ -359,7 +359,7 @@ def render_winprob_tab(wpa_df, games):
         st.subheader("Reliability diagram")
         diag_path = "outputs/reliability_diagram.png"
         if os.path.exists(diag_path):
-            st.image(diag_path, use_container_width=True)
+            st.image(diag_path, width="stretch")
         else:
             st.info("Reliability diagram not found.")
 
@@ -379,7 +379,7 @@ def render_winprob_tab(wpa_df, games):
         board_df.columns = ["player", "total_wpa"]
         board_df.index += 1
         st.dataframe(board_df.style.format({"total_wpa": "{:+.3f}"}),
-                     use_container_width=True)
+                     width="stretch")
     else:
         st.info("Player WPA requires real play-by-play with player names.")
 
@@ -470,7 +470,7 @@ def render_player_props_tab():
             top_lb.style
             .format({"Projected": "{:.1f}", "Line": "{:.1f}", "Over %": "{:.0f}%"})
             .map(_color_lean, subset=["Lean"]),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption("Each line defaults to that player's season average to date "
                    "(rounded to 0.5). Informational only — not betting advice.")
@@ -490,7 +490,7 @@ def render_player_props_tab():
     with st.expander("Feature values used for this projection"):
         fv = pd.DataFrame({"feature": PP_FEATURES,
                            "value": row_df.iloc[0][PP_FEATURES].to_numpy(dtype=float)})
-        st.dataframe(fv.style.format({"value": "{:.2f}"}), use_container_width=True)
+        st.dataframe(fv.style.format({"value": "{:.2f}"}), width="stretch")
 
     # backtest honesty note
     st.divider()
@@ -501,7 +501,7 @@ def render_player_props_tab():
         st.dataframe(res_df.style.format(
             {"mae": "{:.4f}", "coverage_80": "{:.3f}", "interval_width": "{:.2f}"},
             na_rep="—",
-        ), use_container_width=True)
+        ), width="stretch")
         st.caption(
             f"{summ['n_players_test']:,} players, {summ['n_test']:,} test player-games. "
             "The model barely beats a season-average baseline — the variance that history "
