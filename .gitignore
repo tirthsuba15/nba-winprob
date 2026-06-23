@@ -20,3 +20,6 @@ __pycache__/
 
 # os
 .DS_Store
+
+# local plugin artifact
+ruvector.db
