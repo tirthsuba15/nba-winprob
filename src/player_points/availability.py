@@ -47,7 +47,12 @@ def build_availability(player_logs: pd.DataFrame) -> pd.DataFrame:
     """Return per player-game availability features (leakage-safe)."""
     df = player_logs.copy()
     df.columns = [c.lower() for c in df.columns]
-    df["min_dec"] = df["min"].apply(_to_min) if "min" in df.columns else 0.0
+    if "min_dec" in df.columns:
+        df["min_dec"] = pd.to_numeric(df["min_dec"], errors="coerce").fillna(0.0)
+    elif "min" in df.columns:
+        df["min_dec"] = df["min"].apply(_to_min)
+    else:
+        df["min_dec"] = 0.0
     df["game_date"] = pd.to_datetime(df["game_date"])
     for col in ("player_id", "team_id"):
         df[col] = df[col].astype(int)

@@ -172,7 +172,7 @@ def build_projection_row(df_features, player_name, opp_abbrev, game_date):
         ].sort_values("game_date")
         if not opp_def.empty:
             ol = opp_def.iloc[-1]
-            row["opp_pts_allowed"] = float(ol["opp_pts_allowed"])
+            row["opp_def_rating"] = float(ol["opp_def_rating"])
             row["opp_pace"] = float(ol["opp_pace"])
 
     X = row.to_numpy(dtype=float).reshape(1, -1)

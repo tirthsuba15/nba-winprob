@@ -79,7 +79,7 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
         )
         if opp_mask.any():
             opp_latest = df_features[opp_mask].sort_values("game_date").iloc[-1]
-            row["opp_pts_allowed"] = opp_latest.get("opp_pts_allowed", row["opp_pts_allowed"])
+            row["opp_def_rating"] = opp_latest.get("opp_def_rating", row["opp_def_rating"])
             row["opp_pace"]        = opp_latest.get("opp_pace", row["opp_pace"])
 
     # news.py hook — plug injury adjustments in here

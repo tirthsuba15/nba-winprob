@@ -1,137 +1,120 @@
 """
-Leakage-safe feature engineering for the player-points projection model.
+Leakage-safe features for the player-points model (5-season version).
 
-Every feature is computable BEFORE the game tips off:
-  - Rolling stats use shift(1) so the current game is never in its own window.
-  - Opponent defensive features are computed from opponent games PRIOR to this date.
-  - Season-to-date average uses a cumulative mean up to but not including this game.
+Every feature is computable BEFORE tip-off:
+  - rolling stats use shift(1) so the current game is never in its own window
+  - season-to-date average uses a cumulative mean up to (not including) this game
+  - opponent pace / defensive rating come from the opponent's PRIOR games only
+  - teammate-availability (who sat) is inferred from box scores in availability.py,
+    which is itself strictly to-date
 
-No feature uses the current game's own box score.
+New signal vs the 1-season model:
+  * teammate availability — n_rotation_out, top2_teammate_out
+  * opponent pace + defensive rating from team logs (not a player-log approximation)
+  * usage_roll5 + usage_trend (rising/falling), not just scoring averages
 """
 from __future__ import annotations
+import glob
+import os
 import numpy as np
 import pandas as pd
 
+from availability import build_availability
+
 FEATURES = [
-    "pts_roll5",         # rolling mean PTS over last 5 games (excl. current)
-    "pts_roll10",        # rolling mean PTS over last 10 games
-    "min_roll5",         # rolling mean minutes over last 5 games
-    "min_roll10",        # rolling mean minutes over last 10 games
-    "ppm_roll5",         # points-per-minute rolling 5 (efficiency proxy)
-    "pts_season_avg",    # cumulative season-to-date PTS average (excl. current)
-    "opp_pts_allowed",   # opponent team's rolling avg PTS allowed before this date
-    "opp_pace",          # opponent team's rolling avg estimated possessions per game
-    "home",              # 1 = home game, 0 = away
-    "days_rest",         # calendar days since player's last game (capped at 10)
-    "b2b",               # 1 = back-to-back (days_rest == 1)
+    "pts_roll5", "pts_roll10",
+    "min_roll5", "min_roll10",
+    "ppm_roll5",
+    "pts_season_avg",
+    "usage_roll5", "usage_trend",     # usage level + direction
+    "opp_def_rating", "opp_pace",     # from team logs, to-date
+    "n_rotation_out", "top2_teammate_out",   # availability proxy (the new signal)
+    "home", "days_rest", "b2b",
 ]
 TARGET = "pts"
+TEAM_LOGS_GLOB = "data/raw/team_logs/season=*/team_logs_*.parquet"
 
 
-# ── helpers ────────────────────────────────────────────────────────────────────
-
-def _parse_home(matchup: str) -> int:
-    """'BOS vs. LAL' -> 1 (home),  'BOS @ LAL' -> 0 (away)."""
+# ── small helpers ────────────────────────────────────────────────────────────────
+def _parse_home(matchup) -> int:
     return 1 if "vs." in str(matchup) else 0
 
 
 def _shift_roll(series: pd.Series, window: int) -> pd.Series:
-    """Shift-1 then rolling mean — excludes the current game from its own window."""
     return series.shift(1).rolling(window, min_periods=1).mean()
 
 
-# ── team-level stats per game ───────────────────────────────────────────────────
+# ── opponent pace / defensive rating from TEAM logs ──────────────────────────────
+def build_team_defense(team_logs: pd.DataFrame) -> pd.DataFrame:
+    """Per (team_id, game_id): that team's to-date pace + defensive rating.
 
-def _build_team_game_stats(df: pd.DataFrame) -> pd.DataFrame:
+    DefRtg = 100 * opponent_points / possessions; pace = possessions per game.
+    Both are rolling means over the team's PRIOR games (shift(1)) — leakage-safe.
+    Merge onto a player row by the OPPONENT team id to get opp_def_rating/opp_pace.
     """
-    Aggregate player gamelogs into team-level per-game totals.
+    df = team_logs.copy()
+    df.columns = [c.lower() for c in df.columns]
+    df["game_id"] = df["game_id"].astype(str).str.zfill(10)
+    df["game_date"] = pd.to_datetime(df["game_date"])
+    for c in ("fga", "fta", "tov", "oreb", "pts"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["poss"] = (df["fga"] + 0.44 * df["fta"] - df["oreb"] + df["tov"]).clip(lower=1)
 
-    Returns DataFrame: team_id, game_id, game_date, team_pts, possessions
-    possessions ≈ FGA + 0.44*FTA + TOV - OREB  (Dean Oliver approximation)
-    """
-    tg = (
-        df.groupby(["team_id", "game_id", "game_date"])
-        .agg(team_pts=("pts", "sum"),
-             team_fga=("fga", "sum"),
-             team_fta=("fta", "sum"),
-             team_tov=("tov", "sum"),
-             team_oreb=("oreb", "sum"))
-        .reset_index()
-    )
-    tg["possessions"] = (
-        tg["team_fga"]
-        + 0.44 * tg["team_fta"]
-        + tg["team_tov"]
-        - tg["team_oreb"]
-    ).clip(lower=1)
-    return tg[["team_id", "game_id", "game_date", "team_pts", "possessions"]]
-
-
-def _build_opp_defense_lookup(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each (team_id, game_date), compute rolling avg of points they allowed
-    and avg pace — both using only games BEFORE this date (leakage-safe).
-
-    Returns DataFrame: team_id, game_id, opp_pts_allowed, opp_pace
-    (indexed by the DEFENDING team, so callers look up by opponent team_id)
-    """
-    tg = _build_team_game_stats(df)
-
-    # Identify the opponent in each game (the other team in same game_id)
-    g = tg[["game_id", "team_id", "team_pts", "possessions"]].copy()
-    # Self-join on game_id to get the opponent's pts in that game
+    # pair the two teams in each game to get opponent points
+    g = df[["game_id", "team_id", "pts", "poss"]]
     paired = g.merge(
-        g.rename(columns={"team_id": "opp_id", "team_pts": "opp_pts",
-                          "possessions": "opp_poss"}),
+        g.rename(columns={"team_id": "opp_id", "pts": "opp_pts", "poss": "opp_poss"}),
         on="game_id",
     )
     paired = paired[paired["team_id"] != paired["opp_id"]]
-
-    # pts_allowed by team_id in this game = opp_pts (what the other team scored)
-    paired = paired.merge(
-        tg[["team_id", "game_id", "game_date"]],
-        on=["team_id", "game_id"],
-    )
+    paired = paired.merge(df[["team_id", "game_id", "game_date", "season"]],
+                          on=["team_id", "game_id"])
     paired = paired.sort_values(["team_id", "game_date"])
 
-    # Rolling avg (shift-1 so the game itself isn't in its own window)
-    paired["opp_pts_allowed"] = (
-        paired.groupby("team_id")["opp_pts"]
-        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
+    paired["def_rating_game"] = 100.0 * paired["opp_pts"] / paired["poss"]
+    paired["opp_def_rating"] = (
+        paired.groupby("team_id")["def_rating_game"]
+        .transform(lambda s: s.shift(1).expanding().mean())
     )
     paired["opp_pace"] = (
-        paired.groupby("team_id")["possessions"]
-        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
+        paired.groupby("team_id")["poss"]
+        .transform(lambda s: s.shift(1).expanding().mean())
     )
-
-    return paired[["team_id", "game_id", "opp_pts_allowed", "opp_pace"]].drop_duplicates(
+    return paired[["team_id", "game_id", "opp_def_rating", "opp_pace"]].drop_duplicates(
         subset=["team_id", "game_id"]
     )
 
 
-# ── player-level rolling features ─────────────────────────────────────────────
+def _load_team_logs() -> pd.DataFrame | None:
+    files = glob.glob(TEAM_LOGS_GLOB)
+    if not files:
+        return None
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
+
+# ── player rolling / usage / rest ────────────────────────────────────────────────
 def _add_player_rolling(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player_id", "game_date"]).copy()
 
     def roll(col, w):
-        return df.groupby("player_id")[col].transform(
-            lambda s: _shift_roll(s, w)
-        )
+        return df.groupby("player_id")[col].transform(lambda s: _shift_roll(s, w))
 
-    df["pts_roll5"]  = roll("pts", 5)
+    df["pts_roll5"] = roll("pts", 5)
     df["pts_roll10"] = roll("pts", 10)
-    df["min_roll5"]  = roll("min_dec", 5)
+    df["min_roll5"] = roll("min_dec", 5)
     df["min_roll10"] = roll("min_dec", 10)
 
-    # points-per-minute: compute for each row first, then roll
     df["ppm_raw"] = df["pts"] / df["min_dec"].replace(0, np.nan)
-    df["ppm_roll5"] = df.groupby("player_id")["ppm_raw"].transform(
-        lambda s: _shift_roll(s, 5)
-    )
+    df["ppm_roll5"] = df.groupby("player_id")["ppm_raw"].transform(lambda s: _shift_roll(s, 5))
     df.drop(columns=["ppm_raw"], inplace=True)
 
-    # season-to-date cumulative mean (excludes current game via shift)
+    # usage proxy = FGA + 0.44*FTA + TOV ; level + direction
+    df["usage_raw"] = df["fga"] + 0.44 * df["fta"] + df["tov"]
+    df["usage_roll5"] = df.groupby("player_id")["usage_raw"].transform(lambda s: _shift_roll(s, 5))
+    usage_roll10 = df.groupby("player_id")["usage_raw"].transform(lambda s: _shift_roll(s, 10))
+    df["usage_trend"] = df["usage_roll5"] - usage_roll10     # >0 rising, <0 falling
+    df.drop(columns=["usage_raw"], inplace=True)
+
     df["pts_season_avg"] = df.groupby(["player_id", "season"])["pts"].transform(
         lambda s: s.shift(1).expanding().mean()
     )
@@ -142,79 +125,69 @@ def _add_rest(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["player_id", "game_date"]).copy()
     df["game_date_dt"] = pd.to_datetime(df["game_date"])
     df["days_rest"] = (
-        df.groupby("player_id")["game_date_dt"]
-        .transform(lambda s: s.diff().dt.days)
-        .fillna(7)   # first game of season: treat as well-rested
-        .clip(upper=10)
+        df.groupby("player_id")["game_date_dt"].transform(lambda s: s.diff().dt.days)
+        .fillna(7).clip(upper=10)
     )
     df["b2b"] = (df["days_rest"] == 1).astype(int)
     df.drop(columns=["game_date_dt"], inplace=True)
     return df
 
 
-def _add_home(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["home"] = df["matchup"].apply(_parse_home)
-    return df
-
-
 # ── main entry point ───────────────────────────────────────────────────────────
-
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build the full feature matrix from raw player_gamelogs.
-
-    Parameters
-    ----------
-    df : DataFrame from player_gamelogs.csv
-
-    Returns
-    -------
-    DataFrame with FEATURES columns + TARGET + metadata
-    (player_id, player_name, game_id, game_date, season)
-    """
+def build_features(df: pd.DataFrame, team_logs: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Build the full feature matrix from raw player gamelogs (5-season)."""
     df = df.copy()
-    df = _add_home(df)
+    df.columns = [c.lower() for c in df.columns]
+    # NBA game ids are 10-char strings ("0022000001"); CSV may parse them as int
+    # and drop leading zeros. Normalize so merges against parquet line up.
+    df["game_id"] = df["game_id"].astype(str).str.zfill(10)
+    if "min_dec" not in df.columns and "min" in df.columns:
+        df["min_dec"] = pd.to_numeric(df["min"], errors="coerce").fillna(0.0)
+    for c in ("fga", "fta", "tov", "oreb", "pts"):
+        if c not in df.columns:
+            df[c] = 0.0
+
+    df["home"] = df["matchup"].apply(_parse_home)
     df = _add_rest(df)
     df = _add_player_rolling(df)
 
-    # opponent defensive lookup — keyed by the OPPONENT team's id
-    opp_def = _build_opp_defense_lookup(df)
+    # teammate availability (the new signal)
+    avail = build_availability(df)
+    df = df.merge(avail, on=["player_id", "game_id"], how="left")
 
-    # Each player row has team_id (their team). The opponent is inferred per game:
-    # merge opp_def on (game_id, team_id) where team_id = opponent team.
-    # We need to find opp_team_id per player-game.
-    # Game has 2 teams; for each player-game, the other team is the opponent.
+    # opponent team id per player-game
     game_teams = df[["game_id", "team_id"]].drop_duplicates()
-    # self-join to get the opp team per game
     game_opp = game_teams.merge(
-        game_teams.rename(columns={"team_id": "opp_team_id"}),
-        on="game_id"
+        game_teams.rename(columns={"team_id": "opp_team_id"}), on="game_id"
     )
     game_opp = game_opp[game_opp["team_id"] != game_opp["opp_team_id"]]
-
     df = df.merge(game_opp, on=["game_id", "team_id"], how="left")
 
-    # Now merge opp defensive stats: look up opp_team_id in opp_def
-    df = df.merge(
-        opp_def.rename(columns={"team_id": "opp_team_id"}),
-        on=["game_id", "opp_team_id"],
-        how="left",
-    )
+    # opponent pace + defensive rating from team logs
+    if team_logs is None:
+        team_logs = _load_team_logs()
+    if team_logs is not None:
+        team_def = build_team_defense(team_logs)
+        df = df.merge(
+            team_def.rename(columns={"team_id": "opp_team_id"}),
+            on=["game_id", "opp_team_id"], how="left",
+        )
+    else:
+        df["opp_def_rating"] = np.nan
+        df["opp_pace"] = np.nan
 
-    # Fill NaN rolling features with the season average (cold-start players)
+    # fill cold-start NaNs with per-player-season means, then 0
     for col in FEATURES:
-        if col in df.columns:
-            df[col] = df[col].fillna(df.groupby(["player_id", "season"])[col]
-                                      .transform("mean"))
-    # Final fallback for any remaining NaN
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = df[col].fillna(
+            df.groupby(["player_id", "season"])[col].transform("mean")
+        )
     df[FEATURES] = df[FEATURES].fillna(0.0)
     df[TARGET] = df[TARGET].fillna(0.0)
-
-    # Drop rows with no target (shouldn't happen with real data)
     df = df.dropna(subset=[TARGET])
 
-    meta_cols = ["player_id", "player_name", "game_id", "game_date", "season",
-                 "team_id", "opp_team_id", "matchup"]
-    keep = [c for c in meta_cols if c in df.columns] + FEATURES + [TARGET]
+    meta = ["player_id", "player_name", "game_id", "game_date", "season",
+            "team_id", "opp_team_id", "matchup"]
+    keep = [c for c in meta if c in df.columns] + FEATURES + [TARGET]
     return df[keep].reset_index(drop=True)
