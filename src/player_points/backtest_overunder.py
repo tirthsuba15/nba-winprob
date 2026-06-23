@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from features import build_features, FEATURES, TARGET
 from odds import prob_over
-from model import train_models, predict_distribution, MIN_TRAIN_GAMES
+from model import train_bundle, predict_bundle, MIN_TRAIN_GAMES
 
 
 def compute_lines(df: pd.DataFrame) -> pd.DataFrame:
@@ -88,18 +88,16 @@ def main():
     print(f"Train seasons: {train_seasons}  ({len(train_df):,} rows)")
     print(f"Test  seasons: {test_seasons}  ({len(test_df):,} player-games with a valid line)\n")
 
-    X_tr = train_df[FEATURES].to_numpy(dtype=float)
     y_tr = train_df[TARGET].to_numpy(dtype=float)
     line_tr = train_df["line"].to_numpy(dtype=float)
-    X_te = test_df[FEATURES].to_numpy(dtype=float)
     y_te = test_df[TARGET].to_numpy(dtype=float)
     line_te = test_df["line"].to_numpy(dtype=float)
 
-    print("Training models on the train seasons …")
-    models = train_models(X_tr, y_tr)
+    print("Training bundle (minutes sub-model + points models) on the train seasons …")
+    bundle = train_bundle(train_df)
 
-    m_tr, lo_tr, hi_tr = predict_distribution(models, X_tr)
-    m_te, lo_te, hi_te = predict_distribution(models, X_te)
+    m_tr, lo_tr, hi_tr = predict_bundle(bundle, train_df)
+    m_te, lo_te, hi_te = predict_bundle(bundle, test_df)
 
     p_tr = _p_over_vec(m_tr, lo_tr, hi_tr, line_tr)
     p_raw = _p_over_vec(m_te, lo_te, hi_te, line_te)
@@ -153,6 +151,22 @@ def main():
         conf_buckets[f">{t:.2f}"] = {"n": cnt, "hit_rate": hr}
         print(f"  {('>'+format(t,'.2f')):>14} {cnt:>8,} {(f'{hr:.3f}' if cnt else '—'):>10}")
 
+    # ── 2b. COVERAGE-vs-ACCURACY CURVE (selective: most-confident slices) ────────
+    print("\n" + "=" * 72)
+    print("2b. COVERAGE-vs-ACCURACY  (top-k% most-confident calls; the real target)")
+    print("=" * 72)
+    print(f"  {'slice':>10} {'n':>8} {'coverage':>10} {'hit_rate':>10}")
+    order = np.argsort(-conf)            # most confident first
+    hit_sorted = hit[order]
+    coverage_curve = []
+    for pct in (5, 10, 25, 50):
+        k = max(1, int(round(n * pct / 100)))
+        hr = float(hit_sorted[:k].mean())
+        coverage_curve.append({"top_pct": pct, "n": k,
+                               "coverage": k / n, "hit_rate": hr})
+        print(f"  {('top '+str(pct)+'%'):>10} {k:>8,} {k/n:>9.1%} {hr:>10.3f}")
+    print("\n  Target: ~0.80 on the most-confident slice (NOT overall).")
+
     # ── 3. calibration deciles (raw vs calibrated) ──────────────────────────────
     print("\n" + "=" * 72)
     print("3. P(over) CALIBRATION BY DECILE  (pred vs actual over-rate)")
@@ -183,6 +197,18 @@ def main():
           f"{cal_m['log_loss']:>10.4f} {ll_naive:>10.4f}")
     print(f"\n  (naive = always predict the base over-rate {base:.3f})")
 
+    # ── LEAKAGE TRIPWIRE: overall hit rate (all calls, 0.5 threshold) ────────────
+    TRIPWIRE = 0.63
+    leak_flag = cal_m["overall_hit_rate"] > TRIPWIRE
+    print("\n" + "=" * 72)
+    if leak_flag:
+        print(f"⚠ LEAKAGE TRIPWIRE: overall hit rate {cal_m['overall_hit_rate']:.3f} "
+              f"> {TRIPWIRE} — treat as a BUG, not a win. Investigate before trusting.")
+    else:
+        print(f"✓ Leakage tripwire OK: overall hit rate {cal_m['overall_hit_rate']:.3f} "
+              f"<= {TRIPWIRE} (selective coverage is where the edge should live).")
+    print("=" * 72)
+
     # ── save (new becomes the reference; keep the old inline) ────────────────────
     summary = {
         "train_seasons": train_seasons,
@@ -193,6 +219,8 @@ def main():
         "naive_always_over": always_over,
         "naive_coin_flip": 0.5,
         "confidence_buckets": conf_buckets,
+        "coverage_curve": coverage_curve,
+        "leakage_tripwire": {"threshold": TRIPWIRE, "flagged": bool(leak_flag)},
         "calibration_deciles": calib,
         "brier": cal_m["brier"],
         "brier_raw": raw_m["brier"],

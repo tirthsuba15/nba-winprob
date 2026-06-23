@@ -71,6 +71,52 @@ def predict_distribution(models, X):
     return y_mean, y_lo, y_hi
 
 
+# ── minutes sub-model + bundle ────────────────────────────────────────────────────
+# Pre-game drivers of how many minutes a player will get tonight. The minutes
+# model predicts minutes from these; pred_minutes is then a feature for points.
+# LEAKAGE: pred_minutes uses ONLY pre-game inputs; the actual game's min_dec is
+# never a points feature (it is only the minutes model's training label).
+MINUTES_FEATURES = ["min_roll5", "min_roll10", "days_rest", "b2b",
+                    "n_rotation_out", "top2_teammate_out", "usage_roll5",
+                    "expected_mismatch"]
+POINTS_FEATURES = FEATURES + ["pred_minutes"]
+
+
+def train_minutes(train_df):
+    """Train an XGBoost minutes model (target = actual minutes that game)."""
+    from xgboost import XGBRegressor
+    X = train_df[MINUTES_FEATURES].to_numpy(dtype=float)
+    y = train_df["min_dec"].to_numpy(dtype=float)
+    m = XGBRegressor(n_estimators=250, max_depth=4, learning_rate=0.05,
+                     subsample=0.9, colsample_bytree=0.8, min_child_weight=5,
+                     n_jobs=-1, tree_method="hist", objective="reg:squarederror")
+    m.fit(X, y)
+    return m
+
+
+def points_matrix(df, minutes_model):
+    """Build the points feature matrix = FEATURES + pred_minutes (leakage-safe)."""
+    pred_min = minutes_model.predict(df[MINUTES_FEATURES].to_numpy(dtype=float)).clip(min=0)
+    return np.column_stack([df[FEATURES].to_numpy(dtype=float), pred_min])
+
+
+def train_bundle(train_df):
+    """Train minutes model + mean/q10/q90 points models. Returns a bundle dict."""
+    print("  Training minutes sub-model …")
+    minutes = train_minutes(train_df)
+    Xtr = points_matrix(train_df, minutes)
+    ytr = train_df[TARGET].to_numpy(dtype=float)
+    models = train_models(Xtr, ytr)
+    return {"mean": models["mean"], "lo": models["lo"], "hi": models["hi"],
+            "minutes": minutes, "features": POINTS_FEATURES}
+
+
+def predict_bundle(bundle, df):
+    """(mean, lo, hi) for rows in df using the full bundle."""
+    X = points_matrix(df, bundle["minutes"])
+    return predict_distribution(bundle, X)
+
+
 def evaluate(name, y_true, y_mean, y_lo=None, y_hi=None):
     mae = float(np.abs(y_true - y_mean).mean())
     result = {"model": name, "mae": mae, "n": int(len(y_true))}
@@ -128,14 +174,11 @@ def main():
     print(f"\nTrain: {len(train_df):,} rows ({', '.join(s for s in seasons if s not in test_seasons)})")
     print(f"Test : {len(test_df):,} rows ({', '.join(test_seasons)})")
 
-    X_tr = train_df[FEATURES].to_numpy(dtype=float)
-    y_tr = train_df[TARGET].to_numpy(dtype=float)
-    X_te = test_df[FEATURES].to_numpy(dtype=float)
     y_te = test_df[TARGET].to_numpy(dtype=float)
 
-    print("\nTraining models …")
-    models = train_models(X_tr, y_tr)
-    y_mean, y_lo, y_hi = predict_distribution(models, X_te)
+    print("\nTraining bundle (minutes sub-model + points models) …")
+    bundle = train_bundle(train_df)
+    y_mean, y_lo, y_hi = predict_bundle(bundle, test_df)
 
     # Naive baseline (season-avg-to-date from features)
     y_naive = naive_baseline(train_df, test_df)
@@ -150,18 +193,18 @@ def main():
     print(res_df.to_string(float_format=lambda x: f"{x:.4f}"))
     print("\n(coverage_80 should be ~0.80 for a well-calibrated interval)")
 
-    # Feature importance
-    imp = sorted(zip(FEATURES, models["mean"].feature_importances_),
+    # Feature importance (points mean model, over FEATURES + pred_minutes)
+    imp = sorted(zip(POINTS_FEATURES, bundle["mean"].feature_importances_),
                  key=lambda x: -x[1])
-    print("\nFeature importance (mean model):")
+    print("\nFeature importance (points mean model):")
     for f, v in imp:
         print(f"  {f:22s} {v:.3f}")
 
-    # Save models
+    # Save the full bundle (minutes model + points models + feature order)
     model_path = os.path.join(args.out, "player_points_models.pkl")
     with open(model_path, "wb") as fh:
-        pickle.dump(models, fh)
-    print(f"\nSaved models to {model_path}")
+        pickle.dump(bundle, fh)
+    print(f"\nSaved bundle to {model_path}")
 
     # Save summary
     summary = {

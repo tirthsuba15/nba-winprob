@@ -88,7 +88,10 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
         print(f"  {player_name} marked Out per news.py — skipping.")
         return None
 
-    X = np.array([[row_dict.get(f, row[f]) for f in FEATURES]], dtype=float)
+    # build a 1-row frame, append pred_minutes via the minutes sub-model
+    from model import points_matrix
+    fr = pd.DataFrame([{f: row_dict.get(f, row[f]) for f in FEATURES}])
+    X = points_matrix(fr, models["minutes"])
     y_mean = float(models["mean"].predict(X)[0])
     y_lo   = float(models["lo"].predict(X)[0])
     y_hi   = float(models["hi"].predict(X)[0])

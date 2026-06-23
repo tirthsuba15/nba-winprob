@@ -146,11 +146,10 @@ def opponent_options(df_features: pd.DataFrame) -> list[str]:
 
 
 def build_projection_row(df_features, player_name, opp_abbrev, game_date):
-    """Build a single pre-game feature row for a player vs an opponent.
-
-    Mirrors predict.project_player: start from the player's most recent game's
-    rolling features, then refresh rest/home and (if given) opponent defensive
-    stats. Returns (feature_array, latest_row) or (None, None).
+    """Build a single pre-game feature row (1-row DataFrame) for a player vs an
+    opponent. Start from the player's most recent game's features, refresh
+    rest/home and (if given) opponent defensive stats. Returns (row_df, latest)
+    or (None, None). pred_minutes is added later by the bundle's minutes model.
     """
     mask = df_features["player_name"] == player_name
     if not mask.any():
@@ -175,31 +174,37 @@ def build_projection_row(df_features, player_name, opp_abbrev, game_date):
             row["opp_def_rating"] = float(ol["opp_def_rating"])
             row["opp_pace"] = float(ol["opp_pace"])
 
-    X = row.to_numpy(dtype=float).reshape(1, -1)
-    return X, latest
+    return row.to_frame().T[PP_FEATURES], latest
 
 
-def predict_points(models, X):
+def _points_X(row_df, bundle):
+    """Append pred_minutes (from the minutes sub-model) to a feature frame."""
+    from model import points_matrix
+    return points_matrix(row_df, bundle["minutes"])
+
+
+def predict_points(bundle, row_df):
     """Return (mean, lo, hi) with quantile-crossing fix."""
-    y_mean = float(models["mean"].predict(X)[0])
-    y_lo = float(models["lo"].predict(X)[0])
-    y_hi = float(models["hi"].predict(X)[0])
+    X = _points_X(row_df, bundle)
+    y_mean = float(bundle["mean"].predict(X)[0])
+    y_lo = float(bundle["lo"].predict(X)[0])
+    y_hi = float(bundle["hi"].predict(X)[0])
     y_lo = max(0.0, min(y_lo, y_mean))
     y_hi = max(y_hi, y_mean)
     return y_mean, y_lo, y_hi
 
 
-def feature_contributions(model, X):
+def feature_contributions(bundle, row_df):
     """Per-prediction SHAP-style contributions via XGBoost pred_contribs.
 
-    No extra dependency — uses the booster directly. Returns list of
-    (feature, contribution) sorted by absolute impact; bias term dropped.
+    Uses the points mean model over the full feature list (incl. pred_minutes).
     """
     import xgboost as xgb
-    booster = model.get_booster()
-    dm = xgb.DMatrix(X, feature_names=PP_FEATURES)
-    contribs = booster.predict(dm, pred_contribs=True)[0]  # (n_features + 1,)
-    pairs = list(zip(PP_FEATURES, contribs[:-1]))
+    feats = bundle.get("features", PP_FEATURES)
+    X = _points_X(row_df, bundle)
+    dm = xgb.DMatrix(X, feature_names=feats)
+    contribs = bundle["mean"].get_booster().predict(dm, pred_contribs=True)[0]
+    pairs = list(zip(feats, contribs[:-1]))
     return sorted(pairs, key=lambda p: -abs(p[1]))
 
 
@@ -211,26 +216,28 @@ def props_leaderboard(opp_abbrev: str | None, game_date: str) -> pd.DataFrame:
     0.5. Batched prediction keeps it laptop-fast. Informational only.
     """
     df = load_pp_features()
-    models = load_pp_models()
-    if df is None or models is None:
+    bundle = load_pp_models()
+    if df is None or bundle is None:
         return pd.DataFrame()
 
-    feats, meta = [], []
+    rows_df, meta = [], []
     for p in df["player_name"].dropna().unique():
-        X, latest = build_projection_row(df, p, opp_abbrev, game_date)
-        if X is None:
+        row_df, latest = build_projection_row(df, p, opp_abbrev, game_date)
+        if row_df is None:
             continue
-        feats.append(X[0])
+        rows_df.append(row_df)
         season_avg = float(latest["pts_season_avg"]) if "pts_season_avg" in latest else 0.0
         meta.append((p, season_avg))
 
-    if not feats:
+    if not rows_df:
         return pd.DataFrame()
 
-    M = np.array(feats, dtype=float)
-    y_mean = models["mean"].predict(M).clip(min=0)
-    y_lo = models["lo"].predict(M).clip(min=0)
-    y_hi = models["hi"].predict(M).clip(min=0)
+    from model import points_matrix
+    batch = pd.concat(rows_df, ignore_index=True)
+    M = points_matrix(batch, bundle["minutes"])
+    y_mean = bundle["mean"].predict(M).clip(min=0)
+    y_lo = bundle["lo"].predict(M).clip(min=0)
+    y_hi = bundle["hi"].predict(M).clip(min=0)
     y_lo = np.minimum(y_lo, y_mean)
     y_hi = np.maximum(y_hi, y_mean)
 
@@ -404,12 +411,12 @@ def render_player_props_tab():
     opp_full = team_name_from_abbrev(opp_abbrev)
     next_date = (pd.Timestamp(df_pp["game_date"].max()) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-    X, latest = build_projection_row(df_pp, player_name, opp_abbrev, next_date)
-    if X is None:
+    row_df, latest = build_projection_row(df_pp, player_name, opp_abbrev, next_date)
+    if row_df is None:
         st.warning(f"No game-log history for {player_name}.")
         return
 
-    y_mean, y_lo, y_hi = predict_points(models, X)
+    y_mean, y_lo, y_hi = predict_points(models, row_df)
 
     st.markdown(f"**{player_name}** vs **{opp_full}** — projected for next game ({_fmt_date(next_date)})")
     m1, m2 = st.columns([1, 2])
@@ -459,7 +466,7 @@ def render_player_props_tab():
 
     # top contributing features (per-prediction, via XGBoost pred_contribs)
     st.subheader("Top contributing features")
-    contribs = feature_contributions(models["mean"], X)
+    contribs = feature_contributions(models, row_df)
     contrib_df = pd.DataFrame(contribs[:8], columns=["feature", "contribution"])
     contrib_df["abs"] = contrib_df["contribution"].abs()
     chart_df = contrib_df.set_index("feature")["contribution"]
