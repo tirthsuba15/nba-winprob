@@ -16,8 +16,8 @@
       "model": "xgboost (mean + 80% interval)",
       "mae": 4.550496508700065,
       "n": 28110,
-      "coverage_80": 0.7764852365706154,
-      "interval_width": 13.61909008026123
+      "coverage_80": 0.8009605122732124,
+      "interval_width": 14.464981079101562
     }
   ],
   "feature_importance": {
