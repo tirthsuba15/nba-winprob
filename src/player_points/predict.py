@@ -28,19 +28,19 @@ try:
     from .features import build_features, FEATURES
     from .news import apply_adjustments
     from .odds import prob_over, round_to_half
-    from .model import calibrate_p
+    from .model import calibrate_p, validate_bundle
 except ImportError:
     from features import build_features, FEATURES
     from news import apply_adjustments
     from odds import prob_over, round_to_half
-    from model import calibrate_p
+    from model import calibrate_p, validate_bundle
 
 
 def _load_models(path="outputs/player_points_models.pkl"):
     if not os.path.exists(path):
         sys.exit(f"Models not found at {path}. Run: python src/player_points/model.py --data data")
     with open(path, "rb") as fh:
-        return pickle.load(fh)
+        return validate_bundle(pickle.load(fh))
 
 
 def _load_gamelogs(data_dir="data"):
@@ -101,6 +101,7 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
     except ImportError:
         from model import points_matrix
     fr = pd.DataFrame([{f: row_dict.get(f, row[f]) for f in FEATURES}])
+    fr["min_season_avg"] = float(latest["min_season_avg"]) if "min_season_avg" in latest else np.nan
     X = points_matrix(fr, models["minutes"])
     y_mean = float(models["mean"].predict(X)[0])
     y_lo   = float(models["lo"].predict(X)[0])

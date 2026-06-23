@@ -37,7 +37,7 @@ MIN_TRAIN_GAMES = 5   # drop players with fewer training samples
 MIN_GAMES_FOR_ROLLING = 3   # drop rows where rolling features are still warming up
 
 
-def _train_xgb(X, y, objective, alpha=None):
+def _train_xgb(X, y, objective, alpha=None, sample_weight=None):
     from xgboost import XGBRegressor
     params = dict(
         n_estimators=300, max_depth=4, learning_rate=0.05,
@@ -48,19 +48,29 @@ def _train_xgb(X, y, objective, alpha=None):
     if alpha is not None:
         params["quantile_alpha"] = alpha
     clf = XGBRegressor(**params)
-    clf.fit(X, y)
+    clf.fit(X, y, sample_weight=sample_weight)
     return clf
 
 
-def train_models(X_tr, y_tr):
+def train_models(X_tr, y_tr, sample_weight=None):
     """Train mean + lower-bound + upper-bound models."""
     print("  Training mean model …")
-    m_mean = _train_xgb(X_tr, y_tr, "reg:squarederror")
+    m_mean = _train_xgb(X_tr, y_tr, "reg:squarederror", sample_weight=sample_weight)
     print("  Training q10 model …")
-    m_lo   = _train_xgb(X_tr, y_tr, "reg:quantileerror", alpha=0.10)
+    m_lo   = _train_xgb(X_tr, y_tr, "reg:quantileerror", alpha=0.10, sample_weight=sample_weight)
     print("  Training q90 model …")
-    m_hi   = _train_xgb(X_tr, y_tr, "reg:quantileerror", alpha=0.90)
+    m_hi   = _train_xgb(X_tr, y_tr, "reg:quantileerror", alpha=0.90, sample_weight=sample_weight)
     return {"mean": m_mean, "lo": m_lo, "hi": m_hi}
+
+
+def recency_weights(train_df, last_n=7, factor=3.0):
+    """Weight each player's most recent `last_n` training games `factor`x.
+
+    Training-only — does not touch features or test, so no leakage.
+    """
+    rank = train_df.groupby("player_id")["game_date"].rank(method="first", ascending=False)
+    w = np.where(rank <= last_n, factor, 1.0)
+    return w.astype(float)
 
 
 def predict_distribution(models, X):
@@ -79,13 +89,26 @@ def predict_distribution(models, X):
 # model predicts minutes from these; pred_minutes is then a feature for points.
 # LEAKAGE: pred_minutes uses ONLY pre-game inputs; the actual game's min_dec is
 # never a points feature (it is only the minutes model's training label).
-MINUTES_FEATURES = ["min_roll5", "min_roll10", "days_rest", "b2b",
-                    "n_rotation_out", "top2_teammate_out", "usage_roll5",
-                    "expected_mismatch"]
+MINUTES_FEATURES = ["min_season_avg", "home", "days_rest", "b2b", "top2_teammate_out"]
 POINTS_FEATURES = FEATURES + ["pred_minutes"]
+REQUIRED_BUNDLE_KEYS = ("mean", "lo", "hi", "minutes", "features", "po_cal")
 
 
-def train_minutes(train_df):
+def validate_bundle(bundle):
+    """Raise a clear ValueError if the model bundle is malformed / stale."""
+    if not isinstance(bundle, dict):
+        raise ValueError(
+            "model bundle is not a dict (stale/corrupt pickle). Retrain: "
+            "python src/player_points/model.py --data data")
+    missing = [k for k in REQUIRED_BUNDLE_KEYS if k not in bundle]
+    if missing:
+        raise ValueError(
+            f"model bundle missing required key(s) {missing}. Retrain: "
+            "python src/player_points/model.py --data data")
+    return bundle
+
+
+def train_minutes(train_df, sample_weight=None):
     """Train an XGBoost minutes model (target = actual minutes that game)."""
     from xgboost import XGBRegressor
     X = train_df[MINUTES_FEATURES].to_numpy(dtype=float)
@@ -93,7 +116,7 @@ def train_minutes(train_df):
     m = XGBRegressor(n_estimators=250, max_depth=4, learning_rate=0.05,
                      subsample=0.9, colsample_bytree=0.8, min_child_weight=5,
                      n_jobs=-1, tree_method="hist", objective="reg:squarederror")
-    m.fit(X, y)
+    m.fit(X, y, sample_weight=sample_weight)
     return m
 
 
@@ -111,11 +134,14 @@ def train_bundle(train_df):
     the same calibrated probabilities the backtest reports — not the raw,
     overconfident ones.
     """
+    weights = recency_weights(train_df)   # last 7 games per player weighted 3x
+    print(f"  Recency weighting: {(weights > 1).sum():,} of {len(weights):,} "
+          f"train rows at 3x (each player's last 7 games)")
     print("  Training minutes sub-model …")
-    minutes = train_minutes(train_df)
+    minutes = train_minutes(train_df, sample_weight=weights)
     Xtr = points_matrix(train_df, minutes)
     ytr = train_df[TARGET].to_numpy(dtype=float)
-    models = train_models(Xtr, ytr)
+    models = train_models(Xtr, ytr, sample_weight=weights)
     bundle = {"mean": models["mean"], "lo": models["lo"], "hi": models["hi"],
               "minutes": minutes, "features": POINTS_FEATURES}
 

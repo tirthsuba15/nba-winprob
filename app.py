@@ -108,8 +108,9 @@ def load_pp_models():
     path = "outputs/player_points_models.pkl"
     if not os.path.exists(path):
         return None
+    from player_points.model import validate_bundle
     with open(path, "rb") as fh:
-        return pickle.load(fh)
+        return validate_bundle(pickle.load(fh))
 
 
 @st.cache_data
@@ -158,7 +159,9 @@ def build_projection_row(df_features, player_name, opp_abbrev, game_date):
     player_rows = df_features[mask].sort_values("game_date")
     latest = player_rows.iloc[-1].copy()
 
-    row = latest[PP_FEATURES].astype(float).copy()
+    # carry min_season_avg too — the minutes sub-model needs it
+    cols = PP_FEATURES + (["min_season_avg"] if "min_season_avg" in latest else [])
+    row = latest[cols].astype(float).copy()
 
     last_date = pd.Timestamp(latest["game_date"])
     next_date = pd.Timestamp(game_date)
@@ -175,7 +178,7 @@ def build_projection_row(df_features, player_name, opp_abbrev, game_date):
             row["opp_def_rating"] = float(ol["opp_def_rating"])
             row["opp_pace"] = float(ol["opp_pace"])
 
-    return row.to_frame().T[PP_FEATURES], latest
+    return row.to_frame().T[cols], latest
 
 
 def _points_X(row_df, bundle):

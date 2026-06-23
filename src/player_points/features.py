@@ -24,9 +24,12 @@ try:
 except ImportError:
     from availability import build_availability
 
+# Points-model features. Minutes are NOT here as a raw average — the minutes
+# sub-model's `pred_minutes` (appended in model.points_matrix) carries that
+# signal instead. `min_season_avg` is computed and carried as metadata so the
+# minutes sub-model can consume it, but the points model never sees it raw.
 FEATURES = [
     "pts_roll5", "pts_roll10",
-    "min_roll5", "min_roll10",
     "ppm_roll5",
     "pts_season_avg",
     "usage_roll5", "usage_trend",     # usage level + direction
@@ -170,6 +173,10 @@ def _add_player_rolling(df: pd.DataFrame) -> pd.DataFrame:
     df["pts_season_avg"] = df.groupby(["player_id", "season"])["pts"].transform(
         lambda s: s.shift(1).expanding().mean()
     )
+    # season-to-date average minutes (leakage-safe) — input to the minutes sub-model
+    df["min_season_avg"] = df.groupby(["player_id", "season"])["min_dec"].transform(
+        lambda s: s.shift(1).expanding().mean()
+    )
     return df
 
 
@@ -265,6 +272,6 @@ def build_features(df: pd.DataFrame, team_logs: pd.DataFrame | None = None) -> p
     df = df.dropna(subset=[TARGET])
 
     meta = ["player_id", "player_name", "game_id", "game_date", "season",
-            "team_id", "opp_team_id", "matchup", "min_dec"]
+            "team_id", "opp_team_id", "matchup", "min_dec", "min_season_avg"]
     keep = [c for c in meta if c in df.columns] + FEATURES + [TARGET]
     return df[keep].reset_index(drop=True)
