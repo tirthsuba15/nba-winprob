@@ -30,9 +30,14 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from features import build_features, FEATURES, TARGET
-from odds import prob_over
-from model import train_bundle, predict_bundle, MIN_TRAIN_GAMES
+try:
+    from .features import build_features, FEATURES, TARGET
+    from .odds import prob_over
+    from .model import train_bundle, predict_bundle, MIN_TRAIN_GAMES
+except ImportError:
+    from features import build_features, FEATURES, TARGET
+    from odds import prob_over
+    from model import train_bundle, predict_bundle, MIN_TRAIN_GAMES
 
 
 def compute_lines(df: pd.DataFrame) -> pd.DataFrame:

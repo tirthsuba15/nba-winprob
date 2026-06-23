@@ -28,7 +28,10 @@ import pandas as pd
 # Allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
-from features import build_features, FEATURES, TARGET
+try:
+    from .features import build_features, FEATURES, TARGET
+except ImportError:
+    from features import build_features, FEATURES, TARGET
 
 MIN_TRAIN_GAMES = 5   # drop players with fewer training samples
 MIN_GAMES_FOR_ROLLING = 3   # drop rows where rolling features are still warming up
@@ -101,20 +104,53 @@ def points_matrix(df, minutes_model):
 
 
 def train_bundle(train_df):
-    """Train minutes model + mean/q10/q90 points models. Returns a bundle dict."""
+    """Train minutes model + mean/q10/q90 points models + an isotonic P(over)
+    calibrator (fit on train only). Returns a bundle dict.
+
+    The calibrator is stored so the SERVING path (predict.py / app.py) returns
+    the same calibrated probabilities the backtest reports — not the raw,
+    overconfident ones.
+    """
     print("  Training minutes sub-model …")
     minutes = train_minutes(train_df)
     Xtr = points_matrix(train_df, minutes)
     ytr = train_df[TARGET].to_numpy(dtype=float)
     models = train_models(Xtr, ytr)
-    return {"mean": models["mean"], "lo": models["lo"], "hi": models["hi"],
-            "minutes": minutes, "features": POINTS_FEATURES}
+    bundle = {"mean": models["mean"], "lo": models["lo"], "hi": models["hi"],
+              "minutes": minutes, "features": POINTS_FEATURES}
+
+    # fit isotonic calibrator on train over/under (line = season-avg-to-date)
+    try:
+        from .odds import prob_over
+    except ImportError:
+        from odds import prob_over
+    from sklearn.isotonic import IsotonicRegression
+    m, lo, hi = predict_distribution(bundle, Xtr)
+    line = train_df["pts_season_avg"].to_numpy(dtype=float)
+    valid = ~np.isnan(line)
+    if valid.sum() > 100:
+        p_raw = np.array([prob_over(a, b, c, d) for a, b, c, d in
+                          zip(m[valid], lo[valid], hi[valid], line[valid])])
+        over = (ytr[valid] > line[valid]).astype(int)
+        bundle["po_cal"] = IsotonicRegression(out_of_bounds="clip").fit(p_raw, over)
+    return bundle
 
 
 def predict_bundle(bundle, df):
     """(mean, lo, hi) for rows in df using the full bundle."""
     X = points_matrix(df, bundle["minutes"])
     return predict_distribution(bundle, X)
+
+
+def calibrate_p(bundle, p_raw):
+    """Apply the bundle's isotonic P(over) calibrator. Scalar in -> scalar out;
+    array in -> array out. No-op if the bundle has no calibrator."""
+    cal = bundle.get("po_cal")
+    if cal is None:
+        return p_raw
+    arr = np.atleast_1d(np.asarray(p_raw, dtype=float))
+    out = np.clip(cal.predict(arr), 0.0, 1.0)
+    return float(out[0]) if np.ndim(p_raw) == 0 else out
 
 
 def evaluate(name, y_true, y_mean, y_lo=None, y_hi=None):

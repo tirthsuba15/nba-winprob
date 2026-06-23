@@ -19,7 +19,10 @@ import os
 import numpy as np
 import pandas as pd
 
-from availability import build_availability
+try:
+    from .availability import build_availability
+except ImportError:
+    from availability import build_availability
 
 FEATURES = [
     "pts_roll5", "pts_roll10",

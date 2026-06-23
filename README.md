@@ -144,7 +144,7 @@ beats naive too (Brier 0.240 vs 0.249, log-loss 0.675 vs 0.692).
 
 ```bash
 python src/player_points/predict.py --player "Stephen Curry" --opp-team BOS --line 24.5
-# → Projected ~22 | Line 24.5 | Over ~36% / Under ~64%
+# → Projected ~22 | Line 24.5 | Over ~29% / Under ~71%  (calibrated)
 python src/player_points/backtest_overunder.py     # coverage curve + leakage tripwire
 ```
 

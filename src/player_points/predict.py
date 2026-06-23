@@ -24,9 +24,16 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from features import build_features, FEATURES
-from news import apply_adjustments
-from odds import prob_over, round_to_half
+try:
+    from .features import build_features, FEATURES
+    from .news import apply_adjustments
+    from .odds import prob_over, round_to_half
+    from .model import calibrate_p
+except ImportError:
+    from features import build_features, FEATURES
+    from news import apply_adjustments
+    from odds import prob_over, round_to_half
+    from model import calibrate_p
 
 
 def _load_models(path="outputs/player_points_models.pkl"):
@@ -89,7 +96,10 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
         return None
 
     # build a 1-row frame, append pred_minutes via the minutes sub-model
-    from model import points_matrix
+    try:
+        from .model import points_matrix
+    except ImportError:
+        from model import points_matrix
     fr = pd.DataFrame([{f: row_dict.get(f, row[f]) for f in FEATURES}])
     X = points_matrix(fr, models["minutes"])
     y_mean = float(models["mean"].predict(X)[0])
@@ -113,6 +123,13 @@ def project_player(player_name: str, opp_abbrev: str | None, game_date: str,
         "hi_raw":   y_hi,
         "season_avg": season_avg,
     }
+
+
+def _default_line(result):
+    """Season-avg-to-date line; fall back to the projection if no prior average."""
+    sa = result.get("season_avg")
+    base = sa if (sa is not None and sa == sa) else result["mean_raw"]  # NaN check
+    return round_to_half(max(0.0, base))
 
 
 def main():
@@ -149,8 +166,8 @@ def main():
         for p in players:
             result = project_player(p, args.opp_team, game_date, models, df)
             if result:
-                line = args.line if args.line is not None else round_to_half(result["season_avg"])
-                p_over = prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line)
+                line = args.line if args.line is not None else _default_line(result)
+                p_over = calibrate_p(models, prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line))
                 result["line"] = line
                 result["over_pct"] = round(p_over * 100)
                 result["lean"] = "Over" if p_over >= 0.5 else "Under"
@@ -167,8 +184,8 @@ def main():
     elif args.player:
         result = project_player(args.player, args.opp_team, game_date, models, df)
         if result:
-            line = args.line if args.line is not None else round_to_half(result["season_avg"])
-            p_over = prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line)
+            line = args.line if args.line is not None else _default_line(result)
+            p_over = calibrate_p(models, prob_over(result["mean_raw"], result["lo_raw"], result["hi_raw"], line))
             print(f"\n{result['player_name']} vs {args.opp_team or '?'} on {game_date}:")
             print(f"  Expected: {result['expected']} pts")
             print(f"  80% interval: {result['interval']} pts")

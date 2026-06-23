@@ -28,6 +28,7 @@ from plot_game import plot_curve
 from team_names import team_name, team_name_from_abbrev
 from player_points.features import build_features as build_pp_features, FEATURES as PP_FEATURES
 from player_points.odds import prob_over, round_to_half
+from player_points.model import calibrate_p
 
 
 # ── display helpers ──────────────────────────────────────────────────────────────
@@ -179,7 +180,7 @@ def build_projection_row(df_features, player_name, opp_abbrev, game_date):
 
 def _points_X(row_df, bundle):
     """Append pred_minutes (from the minutes sub-model) to a feature frame."""
-    from model import points_matrix
+    from player_points.model import points_matrix
     return points_matrix(row_df, bundle["minutes"])
 
 
@@ -232,7 +233,7 @@ def props_leaderboard(opp_abbrev: str | None, game_date: str) -> pd.DataFrame:
     if not rows_df:
         return pd.DataFrame()
 
-    from model import points_matrix
+    from player_points.model import points_matrix
     batch = pd.concat(rows_df, ignore_index=True)
     M = points_matrix(batch, bundle["minutes"])
     y_mean = bundle["mean"].predict(M).clip(min=0)
@@ -243,8 +244,9 @@ def props_leaderboard(opp_abbrev: str | None, game_date: str) -> pd.DataFrame:
 
     rows = []
     for i, (p, savg) in enumerate(meta):
-        line = max(0.0, round_to_half(savg))
-        po = prob_over(float(y_mean[i]), float(y_lo[i]), float(y_hi[i]), line)
+        base = savg if savg == savg else float(y_mean[i])   # NaN -> projection
+        line = max(0.0, round_to_half(base))
+        po = calibrate_p(bundle, prob_over(float(y_mean[i]), float(y_lo[i]), float(y_hi[i]), line))
         rows.append({
             "Player": p,
             "Projected": round(float(y_mean[i]), 1),
@@ -437,7 +439,7 @@ def render_player_props_tab():
         "Line", min_value=0.0, value=float(default_line), step=0.5, key="pp_line",
         help="Defaults to the player's season average to date, rounded to the nearest 0.5.",
     )
-    p_over = prob_over(y_mean, y_lo, y_hi, line)
+    p_over = calibrate_p(models, prob_over(y_mean, y_lo, y_hi, line))
     p_under = 1.0 - p_over
     st.markdown(
         f"**Projected {y_mean:.1f}** | **Line {line:.1f}** | "
@@ -477,7 +479,8 @@ def render_player_props_tab():
 
     # show the underlying feature row for transparency
     with st.expander("Feature values used for this projection"):
-        fv = pd.DataFrame({"feature": PP_FEATURES, "value": X[0]})
+        fv = pd.DataFrame({"feature": PP_FEATURES,
+                           "value": row_df.iloc[0][PP_FEATURES].to_numpy(dtype=float)})
         st.dataframe(fv.style.format({"value": "{:.2f}"}), use_container_width=True)
 
     # backtest honesty note
