@@ -29,9 +29,11 @@ except ImportError:
 # signal instead. `min_season_avg` is computed and carried as metadata so the
 # minutes sub-model can consume it, but the points model never sees it raw.
 FEATURES = [
+    "pts_last3_avg",                  # very recent form (strict past 3 games)
     "pts_roll5", "pts_roll10",
     "ppm_roll5",
     "pts_season_avg",
+    "pts_vs_opponent_hist",           # career avg vs THIS opponent (past meetings)
     "usage_roll5", "usage_trend",     # usage level + direction
     "opp_def_rating", "opp_pace",     # from team logs, to-date
     "opp_def_vs_pos",                 # opp pts allowed to this player's position, to-date
@@ -154,6 +156,7 @@ def _add_player_rolling(df: pd.DataFrame) -> pd.DataFrame:
     def roll(col, w):
         return df.groupby("player_id")[col].transform(lambda s: _shift_roll(s, w))
 
+    df["pts_last3_avg"] = roll("pts", 3)
     df["pts_roll5"] = roll("pts", 5)
     df["pts_roll10"] = roll("pts", 10)
     df["min_roll5"] = roll("min_dec", 5)
@@ -221,6 +224,14 @@ def build_features(df: pd.DataFrame, team_logs: pd.DataFrame | None = None) -> p
     )
     game_opp = game_opp[game_opp["team_id"] != game_opp["opp_team_id"]]
     df = df.merge(game_opp, on=["game_id", "team_id"], how="left")
+
+    # career scoring vs THIS specific opponent — prior meetings only (across all
+    # seasons), leakage-safe via shift(1).expanding()
+    df = df.sort_values(["player_id", "opp_team_id", "game_date"])
+    df["pts_vs_opponent_hist"] = (
+        df.groupby(["player_id", "opp_team_id"])["pts"]
+        .transform(lambda s: s.shift(1).expanding().mean())
+    )
 
     # opponent pace + defensive rating from team logs, and a blowout proxy
     # (expected_mismatch = |own net rating − opp net rating|, to-date)
